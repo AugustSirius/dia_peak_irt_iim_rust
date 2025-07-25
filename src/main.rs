@@ -38,6 +38,14 @@ pub struct CompressedPrecursorResults {
 fn main() -> Result<(), Box<dyn Error>> {
     let max_precursors = 50001; // Can be adjusted as needed
     let parallel_threads = 64; // Hardcoded parameter - change this to control thread count
+
+    let d_folder = args.get(1).cloned().unwrap_or_else(|| {
+        "/storage/guotiannanLab/wangshuaiyao/006.DIABERT_TimsTOF_Rust/test_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d".to_string()
+        // "/Users/augustsirius/Desktop/raw_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d".to_string()
+    });
+
+    let lib_file_path = "/storage/guotiannanLab/wangshuaiyao/006.DIABERT_TimsTOF_Rust/test_data/fitter_rt_lib.tsv";
+    // let lib_file_path = "/Users/augustsirius/Desktop/rust_for_iRT_iIM/fitter_rt_lib.tsv";
     
     rayon::ThreadPoolBuilder::new()
         .num_threads(parallel_threads)
@@ -70,11 +78,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             _ => {}
         }
     }
-    
-    let d_folder = args.get(1).cloned().unwrap_or_else(|| {
-        "/storage/guotiannanLab/wangshuaiyao/006.DIABERT_TimsTOF_Rust/test_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d".to_string()
-        // "/Users/augustsirius/Desktop/raw_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d".to_string()
-    });
     
     let d_path = Path::new(&d_folder);
     if !d_path.exists() {
@@ -157,9 +160,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // ================================ LIBRARY AND REPORT LOADING ================================
     println!("\n========== LIBRARY AND REPORT PROCESSING ==========");
     let lib_processing_start = Instant::now();
-    
-    let lib_file_path = "/storage/guotiannanLab/wangshuaiyao/006.DIABERT_TimsTOF_Rust/test_data/fitter_rt_lib.tsv";
-    // let lib_file_path = "/Users/augustsirius/Desktop/rust_for_iRT_iIM/fitter_rt_lib.tsv";
+
     let library_records = process_library_fast(lib_file_path)?;
     
     let diann_result = library_records_to_dataframe(library_records.clone())?;
