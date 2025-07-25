@@ -1,0 +1,103 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock file (uncomment if building a library)
+# Cargo.lock
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Data files and analysis results
+*.npy
+*.npz
+*.pkl
+*.csv
+*.tsv
+*.parquet
+*.hdf5
+*.h5
+*.json
+*.txt
+analysis_results/
+unique_values_output/
+output_precursors/
+*.d/
+
+# Python files (not needed for Rust project)
+*.py
+*.ipynb
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Cache directories
+.timstof_cache/
+cache/
+.cache/
+
+# Backup and version directories
+稳定版/
+backup/
+old/
+
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Documentation build
+docs/_build/
+
+# Raw data directories
+raw_data/
+data/
+
+# Large binary files
+*.bin
+*.exe
+*.dll
+*.so
+*.dylib 
