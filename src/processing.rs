@@ -139,7 +139,7 @@ pub fn process_single_precursor_compressed(
         frag_repeat_num,
     )?;
     
-    // Step 10: Build fragment info to find frag_type == 2 rows
+    // Step 10: Build fragment info
     let frag_info = build_frag_info(
         &ms1_data_tensor,
         &ms2_data_tensor_processed,
@@ -147,48 +147,107 @@ pub fn process_single_precursor_compressed(
         device,
     );
     
-    // Step 11: Aggregate across repeat dimension
-    let aggregated_rt_sum = rsm_matrix.sum_axis(Axis(1));
-    let aggregated_im_sum = ism_matrix.sum_axis(Axis(1));
+    // Step 11: Create final dataframes (same as reference version)
+    let final_df = create_final_dataframe(
+        &rsm_matrix,
+        &frag_info,
+        &all_rt,
+        i,
+    )?;
+
+    let final_df_im = create_final_dataframe(
+        &ism_matrix,
+        &frag_info,
+        &all_im,
+        i,
+    )?;
     
-    // Step 12: Find rows where frag_type == 2
-    let frag_type_col_idx = 2; // The third column (index 2) is frag_type
-    let mut frag_type_2_indices = Vec::new();
-    
-    for row_idx in 0..frag_info.shape()[1] {
-        if frag_info[[i, row_idx, frag_type_col_idx]] == 2.0 {
-            frag_type_2_indices.push(row_idx);
-        }
-    }
-    
-    println!("Found {} rows with frag_type == 2", frag_type_2_indices.len());
-    
-    // Step 13: Extract only rows with frag_type == 2
-    let n_rt_cols = aggregated_rt_sum.shape()[2];
-    let n_im_cols = aggregated_im_sum.shape()[2];
-    
-    let mut rt_counts = Array1::<f32>::zeros(n_rt_cols);
-    let mut im_counts = Array1::<f32>::zeros(n_im_cols);
-    
-    // Count positive values only in rows with frag_type == 2
-    for col_idx in 0..n_rt_cols {
-        let count = frag_type_2_indices.iter()
-            .filter(|&&row_idx| aggregated_rt_sum[[0, row_idx, col_idx]] > 0.0)
-            .count() as f32;
-        rt_counts[col_idx] = count;
-    }
-    
-    // Count positive values in IM matrix
-    for col_idx in 0..n_im_cols {
-        let count = frag_type_2_indices.iter()
-            .filter(|&&row_idx| aggregated_im_sum[[0, row_idx, col_idx]] > 0.0)
-            .count() as f32;
-        im_counts[col_idx] = count;
-    }
+    // Step 12: Process the dataframes to extract counts for frag_type == 2
+    let rt_counts = process_dataframe_for_frag_type_2(&final_df)?;
+    let im_counts = process_dataframe_for_frag_type_2(&final_df_im)?;
     
     Ok((precursor_data.precursor_id.clone(), rt_counts, im_counts))
 }
 
+// Add this new function to processing.rs
+fn process_dataframe_for_frag_type_2(df: &DataFrame) -> Result<Array1<f32>, Box<dyn Error>> {
+    // Get the frag_type column
+    let frag_type_col = df.column("frag_type")?;
+    let frag_type_values: Vec<f32> = match frag_type_col.dtype() {
+        DataType::Float32 => frag_type_col.f32()?.into_no_null_iter().collect(),
+        DataType::Float64 => frag_type_col.f64()?.into_no_null_iter().map(|v| v as f32).collect(),
+        _ => return Err("frag_type column is not numeric".into()),
+    };
+    
+    // Find indices where frag_type == 2
+    let frag_type_2_indices: Vec<usize> = frag_type_values
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, &val)| if val == 2.0 { Some(idx) } else { None })
+        .collect();
+    
+    // Get all columns except the last 4 (which are the fragment info columns)
+    let n_cols = df.width();
+    let n_data_cols = n_cols - 4;  // Exclude ProductMz, LibraryIntensity, frag_type, FragmentType
+    
+    let mut counts = Array1::<f32>::zeros(n_data_cols);
+    
+    // For each data column, count non-zero values in rows where frag_type == 2
+    for col_idx in 0..n_data_cols {
+        let col = df.get_columns()[col_idx].clone();
+        let values: Vec<f32> = match col.dtype() {
+            DataType::Float32 => col.f32()?.into_no_null_iter().collect(),
+            DataType::Float64 => col.f64()?.into_no_null_iter().map(|v| v as f32).collect(),
+            _ => continue,  // Skip non-numeric columns
+        };
+        
+        let count = frag_type_2_indices
+            .iter()
+            .filter(|&&row_idx| values[row_idx] > 0.0)
+            .count() as f32;
+        
+        counts[col_idx] = count;
+    }
+    
+    Ok(counts)
+}
+
+// Also add the create_final_dataframe function from the reference version
+pub fn create_final_dataframe(
+    rsm_matrix: &Array4<f32>,
+    frag_info: &Array3<f32>,
+    all_rt: &[f32],
+    i: usize,
+) -> Result<DataFrame, Box<dyn Error>> {
+    // Aggregate across repeat dimension
+    let aggregated_x_sum = rsm_matrix.sum_axis(Axis(1));
+    
+    // Extract data for this precursor
+    let precursor_data = aggregated_x_sum.slice(s![0, .., ..]);
+    let precursor_frag_info = frag_info.slice(s![i, .., ..]);
+    
+    let total_frags = precursor_data.shape()[0];
+    let mut columns = Vec::new();
+    
+    // Add RT columns
+    for (rt_idx, &rt_val) in all_rt.iter().enumerate() {
+        let col_data: Vec<f32> = (0..total_frags)
+            .map(|frag_idx| precursor_data[[frag_idx, rt_idx]])
+            .collect();
+        columns.push(Series::new(&format!("{:.6}", rt_val), col_data));
+    }
+    
+    // Add fragment info columns
+    let info_names = ["ProductMz", "LibraryIntensity", "frag_type", "FragmentType"];
+    for col_idx in 0..4.min(precursor_frag_info.shape()[1]) {
+        let col_data: Vec<f32> = (0..total_frags)
+            .map(|row_idx| precursor_frag_info[[row_idx, col_idx]])
+            .collect();
+        columns.push(Series::new(info_names[col_idx], col_data));
+    }
+    
+    Ok(DataFrame::new(columns)?)
+}
 
 pub struct FastChunkFinder {
     low_bounds: Vec<f32>,

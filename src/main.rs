@@ -36,7 +36,7 @@ pub struct CompressedPrecursorResults {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let max_precursors = 50001; // Can be adjusted as needed
+    let max_precursors = 500; // Can be adjusted as needed
     let parallel_threads = 4; // Hardcoded parameter - change this to control thread count
     
     let args: Vec<String> = env::args().collect();
