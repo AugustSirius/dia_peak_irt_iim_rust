@@ -95,7 +95,6 @@ pub struct TimsTOFRawData {
     pub ms2_windows: Vec<((f32, f32), TimsTOFData)>,
 }
 
-/// 读取 TimsTOF .d 文件夹，返回原始数据
 pub fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> {
     let tdf_path = d_folder.join("analysis.tdf");
     let meta = MetadataReader::new(&tdf_path)?;
@@ -105,75 +104,97 @@ pub fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Erro
     let frames = FrameReader::new(d_folder)?;
     let n_frames = frames.len();
     
-    let splits: Vec<FrameSplit> = (0..n_frames).into_par_iter().map(|idx| {
-        let frame = frames.get(idx).expect("frame read");
-        let rt_min = frame.rt_in_seconds as f32 / 60.0;
-        let mut ms1 = TimsTOFData::new();
-        let mut ms2_pairs: Vec<((u32,u32), TimsTOFData)> = Vec::new();
+    println!("Reading {} frames with parallel reduce...", n_frames);
+    let start_time = Instant::now();
+    
+    // Define the reduce identity element
+    let identity = || FrameSplit {
+        ms1: TimsTOFData::new(),
+        ms2: Vec::new(),
+    };
+    
+    // Define how to merge two FrameSplits
+    let merge_splits = |mut a: FrameSplit, mut b: FrameSplit| -> FrameSplit {
+        // Merge MS1 data
+        a.ms1.merge_from(&mut b.ms1);
         
-        match frame.ms_level {
-            MSLevel::MS1 => {
-                let n_peaks = frame.tof_indices.len();
-                ms1 = TimsTOFData::with_capacity(n_peaks);
-                for (p_idx, (&tof, &intensity)) in frame.tof_indices.iter().zip(frame.intensities.iter()).enumerate() {
-                    let mz = mz_cv.convert(tof as f64) as f32;
-                    let scan = find_scan_for_index(p_idx, &frame.scan_offsets);
-                    let im = im_cv.convert(scan as f64) as f32;
-                    ms1.rt_values_min.push(rt_min);
-                    ms1.mobility_values.push(im);
-                    ms1.mz_values.push(mz);
-                    ms1.intensity_values.push(intensity);
-                    ms1.frame_indices.push(frame.index as u32);
-                    ms1.scan_indices.push(scan as u32);
-                }
-            }
-            MSLevel::MS2 => {
-                let qs = &frame.quadrupole_settings;
-                ms2_pairs.reserve(qs.isolation_mz.len());
-                for win in 0..qs.isolation_mz.len() {
-                    if win >= qs.isolation_width.len() { break; }
-                    let prec_mz = qs.isolation_mz[win] as f32;
-                    let width = qs.isolation_width[win] as f32;
-                    let low = prec_mz - width * 0.5;
-                    let high = prec_mz + width * 0.5;
-                    let key = (quantize(low), quantize(high));
-                    
-                    let mut td = TimsTOFData::new();
+        // Merge MS2 data
+        for (key, mut data) in b.ms2 {
+            a.ms2.push((key, data));
+        }
+        
+        a
+    };
+    
+    // Process frames in parallel using reduce
+    let merged_split = (0..n_frames)
+        .into_par_iter()
+        .map(|idx| {
+            let frame = frames.get(idx).expect("frame read");
+            let rt_min = frame.rt_in_seconds as f32 / 60.0;
+            let mut ms1 = TimsTOFData::new();
+            let mut ms2_pairs: Vec<((u32,u32), TimsTOFData)> = Vec::new();
+            
+            match frame.ms_level {
+                MSLevel::MS1 => {
+                    let n_peaks = frame.tof_indices.len();
+                    ms1 = TimsTOFData::with_capacity(n_peaks);
                     for (p_idx, (&tof, &intensity)) in frame.tof_indices.iter().zip(frame.intensities.iter()).enumerate() {
-                        let scan = find_scan_for_index(p_idx, &frame.scan_offsets);
-                        if scan < qs.scan_starts[win] || scan > qs.scan_ends[win] { continue; }
                         let mz = mz_cv.convert(tof as f64) as f32;
+                        let scan = find_scan_for_index(p_idx, &frame.scan_offsets);
                         let im = im_cv.convert(scan as f64) as f32;
-                        td.rt_values_min.push(rt_min);
-                        td.mobility_values.push(im);
-                        td.mz_values.push(mz);
-                        td.intensity_values.push(intensity);
-                        td.frame_indices.push(frame.index as u32);
-                        td.scan_indices.push(scan as u32);
+                        ms1.rt_values_min.push(rt_min);
+                        ms1.mobility_values.push(im);
+                        ms1.mz_values.push(mz);
+                        ms1.intensity_values.push(intensity);
+                        ms1.frame_indices.push(frame.index as u32);
+                        ms1.scan_indices.push(scan as u32);
                     }
-                    ms2_pairs.push((key, td));
                 }
+                MSLevel::MS2 => {
+                    let qs = &frame.quadrupole_settings;
+                    ms2_pairs.reserve(qs.isolation_mz.len());
+                    for win in 0..qs.isolation_mz.len() {
+                        if win >= qs.isolation_width.len() { break; }
+                        let prec_mz = qs.isolation_mz[win] as f32;
+                        let width = qs.isolation_width[win] as f32;
+                        let low = prec_mz - width * 0.5;
+                        let high = prec_mz + width * 0.5;
+                        let key = (quantize(low), quantize(high));
+                        
+                        let mut td = TimsTOFData::new();
+                        for (p_idx, (&tof, &intensity)) in frame.tof_indices.iter().zip(frame.intensities.iter()).enumerate() {
+                            let scan = find_scan_for_index(p_idx, &frame.scan_offsets);
+                            if scan < qs.scan_starts[win] || scan > qs.scan_ends[win] { continue; }
+                            let mz = mz_cv.convert(tof as f64) as f32;
+                            let im = im_cv.convert(scan as f64) as f32;
+                            td.rt_values_min.push(rt_min);
+                            td.mobility_values.push(im);
+                            td.mz_values.push(mz);
+                            td.intensity_values.push(intensity);
+                            td.frame_indices.push(frame.index as u32);
+                            td.scan_indices.push(scan as u32);
+                        }
+                        ms2_pairs.push((key, td));
+                    }
+                }
+                _ => {}
             }
-            _ => {}
-        }
-        FrameSplit { ms1, ms2: ms2_pairs }
-    }).collect();
+            FrameSplit { ms1, ms2: ms2_pairs }
+        })
+        .reduce(identity, merge_splits);
     
-    let ms1_size_estimate: usize = splits.par_iter().map(|s| s.ms1.mz_values.len()).sum();
-    let mut global_ms1 = TimsTOFData::with_capacity(ms1_size_estimate);
+    println!("Frame reading with reduce took: {:.3} seconds", start_time.elapsed().as_secs_f32());
+    
+    // Now aggregate MS2 data by window
+    println!("Aggregating MS2 windows...");
+    let agg_start = Instant::now();
+    
     let mut ms2_hash: HashMap<(u32,u32), TimsTOFData> = HashMap::new();
-    
-    for split in splits {
-        global_ms1.rt_values_min.extend(split.ms1.rt_values_min);
-        global_ms1.mobility_values.extend(split.ms1.mobility_values);
-        global_ms1.mz_values.extend(split.ms1.mz_values);
-        global_ms1.intensity_values.extend(split.ms1.intensity_values);
-        global_ms1.frame_indices.extend(split.ms1.frame_indices);
-        global_ms1.scan_indices.extend(split.ms1.scan_indices);
-        
-        for (key, mut td) in split.ms2 {
-            ms2_hash.entry(key).or_insert_with(TimsTOFData::new).merge_from(&mut td);
-        }
+    for (key, mut td) in merged_split.ms2 {
+        ms2_hash.entry(key)
+            .or_insert_with(TimsTOFData::new)
+            .merge_from(&mut td);
     }
     
     let mut ms2_vec = Vec::with_capacity(ms2_hash.len());
@@ -183,11 +204,250 @@ pub fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Erro
         ms2_vec.push(((low, high), td));
     }
     
+    println!("MS2 aggregation took: {:.3} seconds", agg_start.elapsed().as_secs_f32());
+    
+    Ok(TimsTOFRawData {
+        ms1_data: merged_split.ms1,
+        ms2_windows: ms2_vec,
+    })
+}
+
+
+// Alternative implementation using fold_with for even better performance
+pub fn read_timstof_data_optimized(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> {
+    let tdf_path = d_folder.join("analysis.tdf");
+    let meta = MetadataReader::new(&tdf_path)?;
+    let mz_cv = Arc::new(meta.mz_converter);
+    let im_cv = Arc::new(meta.im_converter);
+    
+    let frames = FrameReader::new(d_folder)?;
+    let n_frames = frames.len();
+    
+    println!("Reading {} frames with optimized parallel processing...", n_frames);
+    let start_time = Instant::now();
+    
+    // Use fold_with for better performance with local accumulation
+    let splits: Vec<FrameSplit> = (0..n_frames)
+        .into_par_iter()
+        .fold_with(Vec::new(), |mut acc, idx| {
+            let frame = frames.get(idx).expect("frame read");
+            let rt_min = frame.rt_in_seconds as f32 / 60.0;
+            let mut ms1 = TimsTOFData::new();
+            let mut ms2_pairs: Vec<((u32,u32), TimsTOFData)> = Vec::new();
+            
+            match frame.ms_level {
+                MSLevel::MS1 => {
+                    let n_peaks = frame.tof_indices.len();
+                    ms1 = TimsTOFData::with_capacity(n_peaks);
+                    
+                    // Vectorized processing where possible
+                    let mz_cv_ref = mz_cv.as_ref();
+                    let im_cv_ref = im_cv.as_ref();
+                    
+                    for (p_idx, (&tof, &intensity)) in frame.tof_indices.iter()
+                        .zip(frame.intensities.iter()).enumerate() 
+                    {
+                        let mz = mz_cv_ref.convert(tof as f64) as f32;
+                        let scan = find_scan_for_index(p_idx, &frame.scan_offsets);
+                        let im = im_cv_ref.convert(scan as f64) as f32;
+                        ms1.rt_values_min.push(rt_min);
+                        ms1.mobility_values.push(im);
+                        ms1.mz_values.push(mz);
+                        ms1.intensity_values.push(intensity);
+                        ms1.frame_indices.push(frame.index as u32);
+                        ms1.scan_indices.push(scan as u32);
+                    }
+                }
+                MSLevel::MS2 => {
+                    let qs = &frame.quadrupole_settings;
+                    ms2_pairs.reserve(qs.isolation_mz.len());
+                    
+                    let mz_cv_ref = mz_cv.as_ref();
+                    let im_cv_ref = im_cv.as_ref();
+                    
+                    for win in 0..qs.isolation_mz.len() {
+                        if win >= qs.isolation_width.len() { break; }
+                        let prec_mz = qs.isolation_mz[win] as f32;
+                        let width = qs.isolation_width[win] as f32;
+                        let low = prec_mz - width * 0.5;
+                        let high = prec_mz + width * 0.5;
+                        let key = (quantize(low), quantize(high));
+                        
+                        let scan_start = qs.scan_starts[win];
+                        let scan_end = qs.scan_ends[win];
+                        
+                        // Pre-allocate with estimated capacity
+                        let mut td = TimsTOFData::with_capacity(frame.tof_indices.len() / 10);
+                        
+                        for (p_idx, (&tof, &intensity)) in frame.tof_indices.iter()
+                            .zip(frame.intensities.iter()).enumerate() 
+                        {
+                            let scan = find_scan_for_index(p_idx, &frame.scan_offsets);
+                            if scan < scan_start || scan > scan_end { continue; }
+                            
+                            let mz = mz_cv_ref.convert(tof as f64) as f32;
+                            let im = im_cv_ref.convert(scan as f64) as f32;
+                            td.rt_values_min.push(rt_min);
+                            td.mobility_values.push(im);
+                            td.mz_values.push(mz);
+                            td.intensity_values.push(intensity);
+                            td.frame_indices.push(frame.index as u32);
+                            td.scan_indices.push(scan as u32);
+                        }
+                        
+                        if !td.mz_values.is_empty() {
+                            ms2_pairs.push((key, td));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            
+            acc.push(FrameSplit { ms1, ms2: ms2_pairs });
+            acc
+        })
+        .reduce(Vec::new, |mut a, mut b| {
+            a.append(&mut b);
+            a
+        });
+    
+    println!("Frame reading phase took: {:.3} seconds", start_time.elapsed().as_secs_f32());
+    
+    // Merge all splits
+    println!("Merging splits...");
+    let merge_start = Instant::now();
+    
+    // Calculate total capacity needed
+    let ms1_capacity: usize = splits.iter().map(|s| s.ms1.mz_values.len()).sum();
+    let mut global_ms1 = TimsTOFData::with_capacity(ms1_capacity);
+    
+    // Use parallel HashMap construction for MS2
+    let ms2_pairs: Vec<((u32, u32), TimsTOFData)> = splits
+        .into_iter()
+        .flat_map(|split| {
+            global_ms1.merge_from(&mut split.ms1.clone());
+            split.ms2
+        })
+        .collect();
+    
+    // Aggregate MS2 by window using parallel grouping
+    let mut ms2_hash: HashMap<(u32,u32), TimsTOFData> = HashMap::new();
+    for (key, mut td) in ms2_pairs {
+        ms2_hash.entry(key)
+            .or_insert_with(TimsTOFData::new)
+            .merge_from(&mut td);
+    }
+    
+    let mut ms2_vec = Vec::with_capacity(ms2_hash.len());
+    for ((q_low, q_high), td) in ms2_hash {
+        let low = q_low as f32 / 10_000.0;
+        let high = q_high as f32 / 10_000.0;
+        ms2_vec.push(((low, high), td));
+    }
+    
+    println!("Merging phase took: {:.3} seconds", merge_start.elapsed().as_secs_f32());
+    println!("Total read time: {:.3} seconds", start_time.elapsed().as_secs_f32());
+    
     Ok(TimsTOFRawData {
         ms1_data: global_ms1,
         ms2_windows: ms2_vec,
     })
 }
+
+
+// /// 读取 TimsTOF .d 文件夹，返回原始数据
+// pub fn read_timstof_data(d_folder: &Path) -> Result<TimsTOFRawData, Box<dyn Error>> {
+//     let tdf_path = d_folder.join("analysis.tdf");
+//     let meta = MetadataReader::new(&tdf_path)?;
+//     let mz_cv = Arc::new(meta.mz_converter);
+//     let im_cv = Arc::new(meta.im_converter);
+    
+//     let frames = FrameReader::new(d_folder)?;
+//     let n_frames = frames.len();
+    
+//     let splits: Vec<FrameSplit> = (0..n_frames).into_par_iter().map(|idx| {
+//         let frame = frames.get(idx).expect("frame read");
+//         let rt_min = frame.rt_in_seconds as f32 / 60.0;
+//         let mut ms1 = TimsTOFData::new();
+//         let mut ms2_pairs: Vec<((u32,u32), TimsTOFData)> = Vec::new();
+        
+//         match frame.ms_level {
+//             MSLevel::MS1 => {
+//                 let n_peaks = frame.tof_indices.len();
+//                 ms1 = TimsTOFData::with_capacity(n_peaks);
+//                 for (p_idx, (&tof, &intensity)) in frame.tof_indices.iter().zip(frame.intensities.iter()).enumerate() {
+//                     let mz = mz_cv.convert(tof as f64) as f32;
+//                     let scan = find_scan_for_index(p_idx, &frame.scan_offsets);
+//                     let im = im_cv.convert(scan as f64) as f32;
+//                     ms1.rt_values_min.push(rt_min);
+//                     ms1.mobility_values.push(im);
+//                     ms1.mz_values.push(mz);
+//                     ms1.intensity_values.push(intensity);
+//                     ms1.frame_indices.push(frame.index as u32);
+//                     ms1.scan_indices.push(scan as u32);
+//                 }
+//             }
+//             MSLevel::MS2 => {
+//                 let qs = &frame.quadrupole_settings;
+//                 ms2_pairs.reserve(qs.isolation_mz.len());
+//                 for win in 0..qs.isolation_mz.len() {
+//                     if win >= qs.isolation_width.len() { break; }
+//                     let prec_mz = qs.isolation_mz[win] as f32;
+//                     let width = qs.isolation_width[win] as f32;
+//                     let low = prec_mz - width * 0.5;
+//                     let high = prec_mz + width * 0.5;
+//                     let key = (quantize(low), quantize(high));
+                    
+//                     let mut td = TimsTOFData::new();
+//                     for (p_idx, (&tof, &intensity)) in frame.tof_indices.iter().zip(frame.intensities.iter()).enumerate() {
+//                         let scan = find_scan_for_index(p_idx, &frame.scan_offsets);
+//                         if scan < qs.scan_starts[win] || scan > qs.scan_ends[win] { continue; }
+//                         let mz = mz_cv.convert(tof as f64) as f32;
+//                         let im = im_cv.convert(scan as f64) as f32;
+//                         td.rt_values_min.push(rt_min);
+//                         td.mobility_values.push(im);
+//                         td.mz_values.push(mz);
+//                         td.intensity_values.push(intensity);
+//                         td.frame_indices.push(frame.index as u32);
+//                         td.scan_indices.push(scan as u32);
+//                     }
+//                     ms2_pairs.push((key, td));
+//                 }
+//             }
+//             _ => {}
+//         }
+//         FrameSplit { ms1, ms2: ms2_pairs }
+//     }).collect();
+    
+//     let ms1_size_estimate: usize = splits.par_iter().map(|s| s.ms1.mz_values.len()).sum();
+//     let mut global_ms1 = TimsTOFData::with_capacity(ms1_size_estimate);
+//     let mut ms2_hash: HashMap<(u32,u32), TimsTOFData> = HashMap::new();
+    
+//     for split in splits {
+//         global_ms1.rt_values_min.extend(split.ms1.rt_values_min);
+//         global_ms1.mobility_values.extend(split.ms1.mobility_values);
+//         global_ms1.mz_values.extend(split.ms1.mz_values);
+//         global_ms1.intensity_values.extend(split.ms1.intensity_values);
+//         global_ms1.frame_indices.extend(split.ms1.frame_indices);
+//         global_ms1.scan_indices.extend(split.ms1.scan_indices);
+        
+//         for (key, mut td) in split.ms2 {
+//             ms2_hash.entry(key).or_insert_with(TimsTOFData::new).merge_from(&mut td);
+//         }
+//     }
+    
+//     let mut ms2_vec = Vec::with_capacity(ms2_hash.len());
+//     for ((q_low, q_high), td) in ms2_hash {
+//         let low = q_low as f32 / 10_000.0;
+//         let high = q_high as f32 / 10_000.0;
+//         ms2_vec.push(((low, high), td));
+//     }
+    
+//     Ok(TimsTOFRawData {
+//         ms1_data: global_ms1,
+//         ms2_windows: ms2_vec,
+//     })
+// }
 
 // ============================================================================
 // Optimized IndexedTimsTOFData with all u32 indices

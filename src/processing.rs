@@ -12,7 +12,6 @@ use ndarray::{Array1, Array2, Array3, Array4, s, Axis, concatenate};
 use polars::prelude::*;
 use std::fs::File;
 
-// Add this new function that directly computes counts without creating DataFrames
 pub fn process_single_precursor_compressed(
     precursor_data: &PrecursorLibData,
     ms1_indexed: &IndexedTimsTOFData,
@@ -140,42 +139,56 @@ pub fn process_single_precursor_compressed(
         frag_repeat_num,
     )?;
     
-    // Step 10: Aggregate across repeat dimension
+    // Step 10: Build fragment info to find frag_type == 2 rows
+    let frag_info = build_frag_info(
+        &ms1_data_tensor,
+        &ms2_data_tensor_processed,
+        frag_repeat_num,
+        device,
+    );
+    
+    // Step 11: Aggregate across repeat dimension
     let aggregated_rt_sum = rsm_matrix.sum_axis(Axis(1));
     let aggregated_im_sum = ism_matrix.sum_axis(Axis(1));
     
-    // Step 11: Extract rows 6-27 (indices 6-27, which are frag_type == 2)
-    // These correspond to the 22 rows where frag_type == 2
-    let aggregated_rt_subset = aggregated_rt_sum.slice(s![0, 6..28, ..]);
-    let aggregated_im_subset = aggregated_im_sum.slice(s![0, 6..28, ..]);
+    // Step 12: Find rows where frag_type == 2
+    let frag_type_col_idx = 2; // The third column (index 2) is frag_type
+    let mut frag_type_2_indices = Vec::new();
     
-    // Step 12: Count positive values for each column
-    let n_rt_cols = aggregated_rt_subset.shape()[1];
-    let n_im_cols = aggregated_im_subset.shape()[1];
+    for row_idx in 0..frag_info.shape()[1] {
+        if frag_info[[i, row_idx, frag_type_col_idx]] == 2.0 {
+            frag_type_2_indices.push(row_idx);
+        }
+    }
+    
+    println!("Found {} rows with frag_type == 2", frag_type_2_indices.len());
+    
+    // Step 13: Extract only rows with frag_type == 2
+    let n_rt_cols = aggregated_rt_sum.shape()[2];
+    let n_im_cols = aggregated_im_sum.shape()[2];
     
     let mut rt_counts = Array1::<f32>::zeros(n_rt_cols);
     let mut im_counts = Array1::<f32>::zeros(n_im_cols);
     
-    // Count positive values in RT matrix
+    // Count positive values only in rows with frag_type == 2
     for col_idx in 0..n_rt_cols {
-        let count = aggregated_rt_subset.slice(s![.., col_idx])
-            .iter()
-            .filter(|&&val| val > 0.0)
+        let count = frag_type_2_indices.iter()
+            .filter(|&&row_idx| aggregated_rt_sum[[0, row_idx, col_idx]] > 0.0)
             .count() as f32;
         rt_counts[col_idx] = count;
     }
     
     // Count positive values in IM matrix
     for col_idx in 0..n_im_cols {
-        let count = aggregated_im_subset.slice(s![.., col_idx])
-            .iter()
-            .filter(|&&val| val > 0.0)
+        let count = frag_type_2_indices.iter()
+            .filter(|&&row_idx| aggregated_im_sum[[0, row_idx, col_idx]] > 0.0)
             .count() as f32;
         im_counts[col_idx] = count;
     }
     
     Ok((precursor_data.precursor_id.clone(), rt_counts, im_counts))
 }
+
 
 pub struct FastChunkFinder {
     low_bounds: Vec<f32>,
