@@ -7,6 +7,7 @@ use std::fs::File;
 use rayon::prelude::*;
 use csv::ReaderBuilder;
 use std::path::Path;
+use std::time::Instant;
 use timsrust::{converters::ConvertableDomain, readers::{FrameReader, MetadataReader}, MSLevel};
 use serde::{Serialize, Deserialize};
 use chrono::Local;
@@ -591,6 +592,7 @@ pub fn quantize(x: f32) -> u32 {
     (x * 10_000.0).round() as u32 
 }
 
+#[derive(Debug, Clone)]
 pub struct FrameSplit {
     pub ms1: TimsTOFData,
     pub ms2: Vec<((u32, u32), TimsTOFData)>,
