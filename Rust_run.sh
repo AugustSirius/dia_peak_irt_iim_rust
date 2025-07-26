@@ -4,8 +4,8 @@
 #SBATCH -q normal
 #SBATCH -J rust_iim_irt_64
 #SBATCH -c 1
-#SBATCH -n 64
-#SBATCH --mem 300G
+#SBATCH -n 32
+#SBATCH --mem 200G
 ########################## MSConvert run #####################
 # module
 module load gcc
