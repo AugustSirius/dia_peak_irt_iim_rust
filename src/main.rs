@@ -36,18 +36,18 @@ pub struct CompressedPrecursorResults {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let max_precursors = 500; // Can be adjusted as needed
-    let parallel_threads = 4; // Hardcoded parameter - change this to control thread count
+    let max_precursors = 50001; // Can be adjusted as needed
+    let parallel_threads = 32; // Hardcoded parameter - change this to control thread count
     
     let args: Vec<String> = env::args().collect();
 
     let d_folder = args.get(1).cloned().unwrap_or_else(|| {
-        // "/storage/guotiannanLab/wangshuaiyao/006.DIABERT_TimsTOF_Rust/test_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d".to_string()
-        "/Users/augustsirius/Desktop/raw_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d".to_string()
+        "/storage/guotiannanLab/wangshuaiyao/006.DIABERT_TimsTOF_Rust/test_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d".to_string()
+        // "/Users/augustsirius/Desktop/raw_data/CAD20220207yuel_TPHP_DIA_pool1_Slot2-54_1_4382.d".to_string()
     });
 
-    // let lib_file_path = "/storage/guotiannanLab/wangshuaiyao/006.DIABERT_TimsTOF_Rust/test_data/fitter_rt_lib.tsv";
-    let lib_file_path = "/Users/augustsirius/Desktop/rust_for_iRT_iIM/fitter_rt_lib.tsv";
+    let lib_file_path = "/storage/guotiannanLab/wangshuaiyao/006.DIABERT_TimsTOF_Rust/test_data/fitter_rt_lib.tsv";
+    // let lib_file_path = "/Users/augustsirius/Desktop/rust_for_iRT_iIM/fitter_rt_lib.tsv";
     
     rayon::ThreadPoolBuilder::new()
         .num_threads(parallel_threads)
