@@ -12,15 +12,13 @@ use ndarray::{Array1, Array2, Array3, Array4, s, Axis, concatenate};
 use polars::prelude::*;
 use std::fs::File;
 
-pub fn process_single_precursor_compressed(
+pub fn process_single_precursor_rsm(
     precursor_data: &PrecursorLibData,
     ms1_indexed: &IndexedTimsTOFData,
     finder: &FastChunkFinder,
     frag_repeat_num: usize,
     device: &str,
-    ms2_rt_values: &[f32],
-    all_im_values: &[f32],
-) -> Result<(String, Array1<f32>, Array1<f32>), Box<dyn Error>> {
+) -> Result<(String, Array4<f32>, Vec<f32>), Box<dyn Error>> {
     println!("\n========== Processing Precursor: {} ==========", precursor_data.precursor_id);
     println!("RT: {:.2}, IM: {:.4}", precursor_data.rt, precursor_data.im);
     
@@ -90,9 +88,12 @@ pub fn process_single_precursor_compressed(
         i,
     )?;
     
-    // Step 7: Extract aligned RT values
-    let all_rt = ms2_rt_values;
-    let all_im = all_im_values;
+    // Step 7: Use extraced aligned rt values
+    let all_rt = extract_aligned_rt_values(
+        &precursor_result_filtered,
+        &frag_result_filtered,
+        precursor_data.rt,
+    );
     
     // Step 8: Build intensity matrices
     let ms1_extract_slice = ms1_extract_width_range_list.slice(s![i, .., ..]).to_owned();
@@ -111,20 +112,6 @@ pub fn process_single_precursor_compressed(
         &ms2_frag_moz_matrix,
         &all_rt,
     )?;
-
-    let ms1_frag_im_matrix = build_im_intensity_matrix_optimized(
-        &precursor_result_filtered,
-        &ms1_extract_slice,
-        &ms1_frag_moz_matrix,
-        &all_im,
-    )?;
-    
-    let ms2_frag_im_matrix = build_im_intensity_matrix_optimized(
-        &frag_result_filtered,
-        &ms2_extract_slice,
-        &ms2_frag_moz_matrix,
-        &all_im,
-    )?;
     
     // Step 9: Reshape and combine matrices
     let rsm_matrix = reshape_and_combine_matrices(
@@ -133,40 +120,8 @@ pub fn process_single_precursor_compressed(
         frag_repeat_num,
     )?;
     
-    let ism_matrix = reshape_and_combine_matrices(
-        ms1_frag_im_matrix,
-        ms2_frag_im_matrix,
-        frag_repeat_num,
-    )?;
-    
-    // Step 10: Build fragment info
-    let frag_info = build_frag_info(
-        &ms1_data_tensor,
-        &ms2_data_tensor_processed,
-        frag_repeat_num,
-        device,
-    );
-    
-    // Step 11: Create final dataframes (same as reference version)
-    let final_df = create_final_dataframe(
-        &rsm_matrix,
-        &frag_info,
-        &all_rt,
-        i,
-    )?;
-
-    let final_df_im = create_final_dataframe(
-        &ism_matrix,
-        &frag_info,
-        &all_im,
-        i,
-    )?;
-    
-    // Step 12: Process the dataframes to extract counts for frag_type == 2
-    let rt_counts = process_dataframe_for_frag_type_2(&final_df)?;
-    let im_counts = process_dataframe_for_frag_type_2(&final_df_im)?;
-    
-    Ok((precursor_data.precursor_id.clone(), rt_counts, im_counts))
+    // Return the RSM matrix and RT values
+    Ok((precursor_data.precursor_id.clone(), rsm_matrix, all_rt.to_vec()))
 }
 
 // Add this new function to processing.rs
@@ -405,7 +360,14 @@ pub fn build_im_intensity_matrix_optimized(
     Ok(frag_im_matrix)
 }
 
-// Helper function implementations
+// Functions moved from main.rs
+pub fn read_parquet_with_polars(file_path: &str) -> PolarsResult<DataFrame> {
+    let file = File::open(file_path)?;
+    let mut df = ParquetReader::new(file).finish()?;
+    let new_col = df.column("Precursor.Id")?.clone().with_name("transition_group_id");
+    df.with_column(new_col)?;
+    Ok(df)
+}
 
 pub fn prepare_precursor_features(
     precursors_list: &[Vec<String>],

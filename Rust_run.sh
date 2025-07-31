@@ -2,10 +2,10 @@
 #slurm options
 #SBATCH -p amd-ep2,intel-sc3,amd-ep2-short
 #SBATCH -q normal
-#SBATCH -J rust_iim_irt_64
+#SBATCH -J rust_iim_irt_32
 #SBATCH -c 1
 #SBATCH -n 32
-#SBATCH --mem 200G
+#SBATCH --mem 300G
 ########################## MSConvert run #####################
 # module
 module load gcc
